@@ -1,0 +1,26 @@
+[2026-06-29 07:10:56] [writer] Parquet writer started. Opening flow log 'cdc_flow.log'.
+[2026-06-29 07:10:57] [writer] Dequeued batch of 1 rows from RingBuffer.
+[2026-06-29 07:10:57] [writer] Appending INSERT row to TableBuffer for table 'wal_test'. LSN: 0x891B4960
+[2026-06-29 07:10:57] [writer] Dequeued batch of 1 rows from RingBuffer.
+[2026-06-29 07:10:57] [writer] Appending INSERT row to TableBuffer for table 'wal_test'. LSN: 0x891B4A20
+[2026-06-29 07:10:57] [writer] Dequeued batch of 1 rows from RingBuffer.
+[2026-06-29 07:10:57] [writer] Appending INSERT row to TableBuffer for table 'wal_test'. LSN: 0x891B4AE0
+[2026-06-29 07:10:57] [writer] Dequeued batch of 1 rows from RingBuffer.
+[2026-06-29 07:10:57] [writer] Appending INSERT row to TableBuffer for table 'wal_test'. LSN: 0x891B4BA0
+[2026-06-29 07:10:57] [writer] Dequeued batch of 1 rows from RingBuffer.
+[2026-06-29 07:10:57] [writer] Appending INSERT row to TableBuffer for table 'wal_test'. LSN: 0x891B4C60
+[2026-06-29 07:10:57] [writer] Dequeued batch of 1 rows from RingBuffer.
+[2026-06-29 07:10:57] [writer] Appending INSERT row to TableBuffer for table 'wal_test'. LSN: 0x891B4D20
+[2026-06-29 07:10:57] [writer] Dequeued batch of 1 rows from RingBuffer.
+[2026-06-29 07:10:57] [writer] Appending INSERT row to TableBuffer for table 'wal_test'. LSN: 0x891B4DE0
+[2026-06-29 07:10:57] [writer] Dequeued batch of 1 rows from RingBuffer.
+[2026-06-29 07:10:57] [writer] Appending INSERT row to TableBuffer for table 'wal_test'. LSN: 0x891B4EA0
+[2026-06-29 07:10:57] [writer] Dequeued batch of 1 rows from RingBuffer.
+[2026-06-29 07:10:57] [writer] Appending INSERT row to TableBuffer for table 'wal_test'. LSN: 0x891B4F60
+[2026-06-29 07:10:57] [writer] Dequeued batch of 1 rows from RingBuffer.
+[2026-06-29 07:10:57] [writer] Appending INSERT row to TableBuffer for table 'wal_test'. LSN: 0x891B5020
+[2026-06-29 07:10:57] [writer] Flush condition met for table 'wal_test': Row Limit Reached (10). Initiating Parquet write for 10 rows.
+[2026-06-29 07:10:58] [writer] Successfully flushed and checkpointed table 'wal_test'.
+[2026-06-29 07:10:58] [writer] Dequeued batch of 2 rows from RingBuffer.
+[2026-06-29 07:10:58] [writer] Appending UPDATE row to TableBuffer for table 'wal_test'. LSN: 0x891B50A8
+[2026-06-29 07:10:58] [writer] Appending DELETE row to TableBuffer for table 'wal_test'. LSN: 0x891B5118
