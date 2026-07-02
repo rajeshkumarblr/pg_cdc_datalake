@@ -36,7 +36,7 @@ def main():
     df = spark.readStream \
         .format("delta") \
         .option("maxFilesPerTrigger", 1) \
-        .load("/home/documentdb/myext/cdc_data_lake_cpp/data/order_items")
+        .load("/home/documentdb/pg_cdc_datalake/data/order_items")
 
     # Filter only INSERTs (new items purchased)
     inserts = df.filter(col("_cdc_operation") == "INSERT")

@@ -258,11 +258,21 @@ static void flush_table_buffer(TableBuffer& buf, const Config& config,
                 // First commit needs protocol and metadata
                 nlohmann::json protocolAction = {{"protocol", {{"minReaderVersion", 1}, {"minWriterVersion", 2}}}};
                 
+                nlohmann::json schemaFields = nlohmann::json::array();
+                schemaFields.push_back({{"name", "_cdc_operation"}, {"type", "string"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
+                schemaFields.push_back({{"name", "_cdc_lsn"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
+                schemaFields.push_back({{"name", "_cdc_timestamp"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
+                for (const auto& col : buf.schema.columns) {
+                    schemaFields.push_back({{"name", col.name}, {"type", "string"}, {"nullable", true}, {"metadata", nlohmann::json::object()}});
+                }
+                nlohmann::json schemaObj = {{"type", "struct"}, {"fields", schemaFields}};
+                
                 nlohmann::json metadataAction = {
                     {"metaData", {
                         {"id", "cdc-" + buf.table_name},
                         {"format", {{"provider", "parquet"}, {"options", nlohmann::json::object()}}},
-                        {"schemaString", ""}, // Optional for simple append
+                        {"schemaString", schemaObj.dump()},
+
                         {"partitionColumns", nlohmann::json::array()},
                         {"configuration", nlohmann::json::object()}
                     }}
