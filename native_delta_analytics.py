@@ -15,10 +15,6 @@ def main():
             df = dt.to_pandas()
             
             if not df.empty:
-                # Convert columns from string to numeric types
-                df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce')
-                df['price_at_purchase'] = pd.to_numeric(df['price_at_purchase'], errors='coerce')
-
                 # Calculate total revenue and units sold per product
                 df['total_price'] = df['quantity'] * df['price_at_purchase']
                 summary = df.groupby('product_id').agg(

@@ -53,8 +53,56 @@ static std::string lsn_to_hex(uint64_t lsn) {
 }
 
 /*
+ * Mapping from PostgreSQL type OID to Arrow DataType
+ */
+static std::shared_ptr<arrow::DataType> oid_to_arrow_type(uint32_t type_oid) {
+    switch (type_oid) {
+        case 21:   return arrow::int16();
+        case 23:   return arrow::int32();
+        case 20:   return arrow::int64();
+        case 700:  return arrow::float32();
+        case 701:
+        case 1700: return arrow::float64();
+        case 16:   return arrow::boolean();
+        default:   return arrow::utf8();
+    }
+}
+
+/*
+ * Mapping from PostgreSQL type OID to Delta Lake string type
+ */
+static std::string oid_to_delta_type(uint32_t type_oid) {
+    switch (type_oid) {
+        case 21:   return "short";
+        case 23:   return "integer";
+        case 20:   return "long";
+        case 700:  return "float";
+        case 701:
+        case 1700: return "double";
+        case 16:   return "boolean";
+        default:   return "string";
+    }
+}
+
+/*
+ * Helper to create the correct Arrow builder based on OID
+ */
+static std::shared_ptr<arrow::ArrayBuilder> make_builder(uint32_t type_oid) {
+    arrow::MemoryPool* pool = arrow::default_memory_pool();
+    switch (type_oid) {
+        case 21:   return std::make_shared<arrow::Int16Builder>(pool);
+        case 23:   return std::make_shared<arrow::Int32Builder>(pool);
+        case 20:   return std::make_shared<arrow::Int64Builder>(pool);
+        case 700:  return std::make_shared<arrow::FloatBuilder>(pool);
+        case 701:
+        case 1700: return std::make_shared<arrow::DoubleBuilder>(pool);
+        case 16:   return std::make_shared<arrow::BooleanBuilder>(pool);
+        default:   return std::make_shared<arrow::StringBuilder>(pool);
+    }
+}
+
+/*
  * TableBuffer accumulates rows for a single PostgreSQL table
- * before they are flushed into a Parquet file.
  */
 struct TableBuffer {
     std::string table_name;
@@ -63,7 +111,7 @@ struct TableBuffer {
     std::shared_ptr<arrow::StringBuilder>  op_builder;
     std::shared_ptr<arrow::Int64Builder>   lsn_builder;
     std::shared_ptr<arrow::Int64Builder>   ts_builder;
-    std::vector<std::shared_ptr<arrow::StringBuilder>> col_builders;
+    std::vector<std::shared_ptr<arrow::ArrayBuilder>> col_builders;
 
     uint64_t start_lsn  = 0;
     uint64_t end_lsn    = 0;
@@ -84,7 +132,7 @@ struct TableBuffer {
 
         col_builders.clear();
         for (size_t i = 0; i < s.columns.size(); ++i) {
-            col_builders.push_back(std::make_shared<arrow::StringBuilder>());
+            col_builders.push_back(make_builder(s.columns[i].type_oid));
         }
 
         start_lsn = 0;
@@ -103,8 +151,8 @@ struct TableBuffer {
         lsn_builder = std::make_shared<arrow::Int64Builder>();
         ts_builder  = std::make_shared<arrow::Int64Builder>();
 
-        for (auto& b : col_builders) {
-            b = std::make_shared<arrow::StringBuilder>();
+        for (size_t i = 0; i < schema.columns.size(); ++i) {
+            col_builders[i] = make_builder(schema.columns[i].type_oid);
         }
 
         start_lsn = 0;
@@ -145,8 +193,51 @@ static void append_row_to_buffer(const CDCRow& row, TableBuffer& buf) {
 
     for (size_t i = 0; i < buf.col_builders.size(); ++i) {
         if (i < values.size() && values[i].has_value()) {
-            (void)buf.col_builders[i]->Append(values[i].value());
-            buf.estimated_bytes += values[i].value().size();
+            const std::string& val = values[i].value();
+            uint32_t type_oid = row.schema.columns[i].type_oid;
+            try {
+                switch (type_oid) {
+                    case 21: {
+                        auto b = std::static_pointer_cast<arrow::Int16Builder>(buf.col_builders[i]);
+                        (void)b->Append(static_cast<int16_t>(std::stoi(val)));
+                        break;
+                    }
+                    case 23: {
+                        auto b = std::static_pointer_cast<arrow::Int32Builder>(buf.col_builders[i]);
+                        (void)b->Append(static_cast<int32_t>(std::stoi(val)));
+                        break;
+                    }
+                    case 20: {
+                        auto b = std::static_pointer_cast<arrow::Int64Builder>(buf.col_builders[i]);
+                        (void)b->Append(static_cast<int64_t>(std::stoll(val)));
+                        break;
+                    }
+                    case 700: {
+                        auto b = std::static_pointer_cast<arrow::FloatBuilder>(buf.col_builders[i]);
+                        (void)b->Append(std::stof(val));
+                        break;
+                    }
+                    case 701:
+                    case 1700: {
+                        auto b = std::static_pointer_cast<arrow::DoubleBuilder>(buf.col_builders[i]);
+                        (void)b->Append(std::stod(val));
+                        break;
+                    }
+                    case 16: {
+                        auto b = std::static_pointer_cast<arrow::BooleanBuilder>(buf.col_builders[i]);
+                        (void)b->Append(val == "t" || val == "true" || val == "1");
+                        break;
+                    }
+                    default: {
+                        auto b = std::static_pointer_cast<arrow::StringBuilder>(buf.col_builders[i]);
+                        (void)b->Append(val);
+                        break;
+                    }
+                }
+            } catch (...) {
+                (void)buf.col_builders[i]->AppendNull();
+            }
+            buf.estimated_bytes += val.size();
         } else {
             (void)buf.col_builders[i]->AppendNull();
         }
@@ -167,7 +258,7 @@ static void flush_table_buffer(TableBuffer& buf, const Config& config,
     fields.push_back(arrow::field("_cdc_timestamp", arrow::int64(), false));
 
     for (const auto& col : buf.schema.columns) {
-        fields.push_back(arrow::field(col.name, arrow::utf8(), true));
+        fields.push_back(arrow::field(col.name, oid_to_arrow_type(col.type_oid), true));
     }
     auto arrow_schema = arrow::schema(fields);
 
@@ -263,7 +354,7 @@ static void flush_table_buffer(TableBuffer& buf, const Config& config,
                 schemaFields.push_back({{"name", "_cdc_lsn"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
                 schemaFields.push_back({{"name", "_cdc_timestamp"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
                 for (const auto& col : buf.schema.columns) {
-                    schemaFields.push_back({{"name", col.name}, {"type", "string"}, {"nullable", true}, {"metadata", nlohmann::json::object()}});
+                    schemaFields.push_back({{"name", col.name}, {"type", oid_to_delta_type(col.type_oid)}, {"nullable", true}, {"metadata", nlohmann::json::object()}});
                 }
                 nlohmann::json schemaObj = {{"type", "struct"}, {"fields", schemaFields}};
                 
