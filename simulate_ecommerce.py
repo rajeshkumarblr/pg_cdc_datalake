@@ -137,7 +137,7 @@ def simulate_updates():
 if __name__ == '__main__':
     setup_schema()
     
-    input("\n[!] Schema created. Please start cdc_data_lake in another terminal, then press Enter here to begin traffic...")
+    print("\n[!] Schema created. Starting traffic simulation automatically...")
     
     t1 = threading.Thread(target=simulate_orders)
     t2 = threading.Thread(target=simulate_updates)
