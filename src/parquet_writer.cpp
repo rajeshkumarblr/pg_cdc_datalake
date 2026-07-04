@@ -23,10 +23,10 @@
  */
 static const char* operation_to_string(Operation op) {
     switch (op) {
-        case Operation::INSERT: return "INSERT";
-        case Operation::UPDATE: return "UPDATE";
-        case Operation::DELETE: return "DELETE";
-        default: return "UNKNOWN";
+        case Operation::INSERT: return "insert";
+        case Operation::UPDATE: return "update_postimage";
+        case Operation::DELETE: return "delete";
+        default: return "unknown";
     }
 }
 
@@ -253,9 +253,9 @@ static void flush_table_buffer(TableBuffer& buf, const Config& config,
     if (buf.row_count == 0) return;
 
     std::vector<std::shared_ptr<arrow::Field>> fields;
-    fields.push_back(arrow::field("_cdc_operation", arrow::utf8(), false));
-    fields.push_back(arrow::field("_cdc_lsn", arrow::int64(), false));
-    fields.push_back(arrow::field("_cdc_timestamp", arrow::int64(), false));
+    fields.push_back(arrow::field("_change_type", arrow::utf8(), false));
+    fields.push_back(arrow::field("_commit_version", arrow::int64(), false));
+    fields.push_back(arrow::field("_commit_timestamp", arrow::int64(), false));
 
     for (const auto& col : buf.schema.columns) {
         fields.push_back(arrow::field(col.name, oid_to_arrow_type(col.type_oid), true));
@@ -350,9 +350,9 @@ static void flush_table_buffer(TableBuffer& buf, const Config& config,
                 nlohmann::json protocolAction = {{"protocol", {{"minReaderVersion", 1}, {"minWriterVersion", 2}}}};
                 
                 nlohmann::json schemaFields = nlohmann::json::array();
-                schemaFields.push_back({{"name", "_cdc_operation"}, {"type", "string"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
-                schemaFields.push_back({{"name", "_cdc_lsn"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
-                schemaFields.push_back({{"name", "_cdc_timestamp"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
+                schemaFields.push_back({{"name", "_change_type"}, {"type", "string"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
+                schemaFields.push_back({{"name", "_commit_version"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
+                schemaFields.push_back({{"name", "_commit_timestamp"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
                 for (const auto& col : buf.schema.columns) {
                     schemaFields.push_back({{"name", col.name}, {"type", oid_to_delta_type(col.type_oid)}, {"nullable", true}, {"metadata", nlohmann::json::object()}});
                 }
@@ -365,7 +365,9 @@ static void flush_table_buffer(TableBuffer& buf, const Config& config,
                         {"schemaString", schemaObj.dump()},
 
                         {"partitionColumns", nlohmann::json::array()},
-                        {"configuration", nlohmann::json::object()}
+                        {"configuration", {
+                            {"delta.enableChangeDataFeed", "true"}
+                        }}
                     }}
                 };
                 delta_out << protocolAction.dump() << "\n";
