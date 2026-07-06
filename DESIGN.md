@@ -12,18 +12,21 @@ The application is designed using a **producer-consumer** architecture to decoup
 graph TD
     subgraph "PostgreSQL"
         WAL["Write-Ahead Log (WAL)"] --> Walsender["walsender (pgoutput)"]
+        Snap["Table Data"] --> CopyOut["COPY TO STDOUT"]
     end
 
     subgraph "Standalone C++ Application (cdc_data_lake)"
+        CopyOut -->|"Binary COPY"| SnapshotManager["Snapshot Manager"]
         Walsender -->|"libpq Replication Protocol"| WalReceiver["Thread 1: WAL Receiver"]
-        WalReceiver -->|"CDCRow objects"| RingBuffer["Lock-Free SPSC Ring Buffer"]
+        SnapshotManager -->|"CDCRow objects"| RingBuffer["Lock-Free SPSC Ring Buffer"]
+        WalReceiver -->|"CDCRow objects"| RingBuffer
         RingBuffer -->|"Batch Dequeue"| ParquetWriter["Thread 2: Parquet Writer"]
-        ParquetWriter -->|"1MB Parquet Files"| Disk["Local Disk / Data Lake"]
+        ParquetWriter -->|"Delta CDF / Parquet Files"| Disk["Local Disk / Data Lake"]
         ParquetWriter -.->|"Checkpoint LSN"| CheckpointFile["checkpoint.json"]
     end
 
     subgraph "Analytics (Spark/Presto)"
-        Disk --> Spark["Apache Spark"]
+        Disk --> Spark["Apache Spark / Delta Lake"]
     end
 ```
 
@@ -51,7 +54,12 @@ When the application starts, it reads `cdc_data_lake.conf` and connects to Postg
 3. Creates the logical replication slot if it doesn't already exist.
 This makes the application entirely self-bootstrapping.
 
-### C. The WAL Receiver Thread (`wal_receiver.cpp`)
+### C. The Snapshot Manager (`snapshot_manager.cpp`)
+Before streaming begins, if a table has no existing checkpoint, the `SnapshotManager` connects to PostgreSQL and runs `COPY (SELECT * FROM table) TO STDOUT (FORMAT BINARY)`.
+- **Initial Load**: It streams all existing rows into the `RingBuffer` as `insert` operations.
+- **Consistent Snapshot**: It uses a synchronized replication slot so the WAL stream picks up exactly where the snapshot left off.
+
+### D. The WAL Receiver Thread (`wal_receiver.cpp`)
 This is **Thread 1** (The Producer). 
 
 - **LibPq Replication Mode**: Connects to PostgreSQL using `START_REPLICATION SLOT ... LOGICAL ...`.
@@ -59,15 +67,15 @@ This is **Thread 1** (The Producer).
 - **pgoutput_parser.cpp**: This component parses the raw binary bytes from PostgreSQL. It maintains a cache of table schemas (from 'Relation' messages) so it knows column names and types. It translates 'Insert', 'Update', and 'Delete' messages into a structured C++ `CDCRow` object.
 - **Keepalives**: Periodically sends heartbeat messages (Standby Status Updates) back to PostgreSQL, acknowledging the highest LSN (Log Sequence Number) we've seen to prevent timeouts.
 
-### D. Lock-Free SPSC Ring Buffer (`ring_buffer.h`)
-This is the **bridge** between Thread 1 and Thread 2.
+### E. Lock-Free SPSC Ring Buffer (`ring_buffer.h`)
+This is the **bridge** between the producers (SnapshotManager/WalReceiver) and Thread 2.
 
 - **SPSC**: Single-Producer, Single-Consumer.
 - **Thread-Safe**: Uses mutexes and condition variables (optimized with lock-free atomic index tracking) to allow Thread 1 to safely hand off `CDCRow` objects to Thread 2.
 - **Batching**: Allows the consumer to pull up to 1000 rows at a time, drastically reducing lock contention and improving throughput.
 
-### E. The Parquet Writer Thread (`parquet_writer.cpp`)
-This is **Thread 2** (The Consumer). It is responsible for accumulating rows and compressing them into Parquet files.
+### F. The Parquet Writer Thread (`parquet_writer.cpp`)
+This is **Thread 2** (The Consumer). It is responsible for accumulating rows and compressing them into Parquet files formatted for Delta Lake CDF.
 
 In this component, high-throughput conversion from row-oriented PostgreSQL data to column-oriented analytics format takes place:
 - **`TableBuffer` Accumulation**: The writer maintains a distinct in-memory `TableBuffer` for each PostgreSQL table it tracks. As rows (`CDCRow`) are dequeued from the `RingBuffer`, they are immediately routed to their corresponding `TableBuffer`.
@@ -79,7 +87,7 @@ In this component, high-throughput conversion from row-oriented PostgreSQL data 
 - **Spark-Friendly Partitioning**: Files are segregated into isolated directories named identically to the source table (e.g., `output_dir/my_table/...`).
 - **Atomic Renames**: To guarantee data integrity for downstream analytics engines (like Apache Spark or Trino), files are initially staged with a `.tmp` extension. Only when the file is completely encoded and closed is an atomic system rename performed to change the extension to `.parquet`.
 
-### F. Checkpointing & Crash Recovery (`checkpoint.cpp`)
+### G. Checkpointing & Crash Recovery (`checkpoint.cpp`)
 To ensure **At-Least-Once Delivery** and zero data loss during crashes:
 
 - Whenever the Parquet Writer successfully renames a `.tmp` file to `.parquet`, it records the `end_lsn` of that batch into a `checkpoint.json` file.
@@ -90,11 +98,11 @@ To ensure **At-Least-Once Delivery** and zero data loss during crashes:
 
 ## 3. Data Schema and Metadata
 
-Every generated Parquet file contains the native columns of the PostgreSQL table, plus three injected metadata columns that are crucial for downstream CDC processing:
+Every generated Parquet file contains the native columns of the PostgreSQL table, plus metadata columns injected for **Delta Lake Change Data Feed (CDF)** compatibility:
 
-1. **`_cdc_operation`**: `"INSERT"`, `"UPDATE"`, or `"DELETE"`.
-2. **`_cdc_lsn`**: The Log Sequence Number (LSN) identifying the exact position of the change in the WAL. Useful for deduplication and ordering.
-3. **`_cdc_timestamp`**: The transaction commit time in microseconds, provided by PostgreSQL.
+1. **`_change_type`**: Indicates the operation type (`"insert"`, `"update_preimage"`, `"update_postimage"`, or `"delete"`).
+2. **`_commit_version`**: The Log Sequence Number (LSN) identifying the exact position of the change in the WAL. This is mapped to Delta's commit version for deduplication and ordering.
+3. **`_commit_timestamp`**: The transaction commit time in microseconds.
 
 ### Parquet Footer Metadata
 In addition to column data, the Parquet file's internal key-value metadata footer contains:
@@ -142,6 +150,13 @@ classDiagram
         +save_checkpoint(Checkpoint cp) void
     }
 
+    class SnapshotManager {
+        -Config config_
+        -RingBuffer ring_buffer_
+        +export_snapshot(string table_name) void
+        -process_copy_data(char* data, int len) void
+    }
+
     class LogicalDecoder {
         -unordered_map schemas_
         -uint64_t current_xact_lsn_
@@ -184,28 +199,37 @@ classDiagram
         +pop_batch(vector~T~& batch, size_t batch_size) bool
     }
 
+    SnapshotManager --> RingBuffer : pushes CDCRow (initial load)
     WalReceiver --> LogicalDecoder : uses
-    WalReceiver --> RingBuffer : pushes CDCRow
+    WalReceiver --> RingBuffer : pushes CDCRow (CDC)
     ParquetWriter --> RingBuffer : pops CDCRow
     ParquetWriter --> CheckpointManager : uses
     PgSetup --> Config : uses
     WalReceiver --> Config : uses
     ParquetWriter --> Config : uses
+    SnapshotManager --> Config : uses
 ```
 
 ### Sequence Diagram: Normal Data Flow
 
-This sequence diagram outlines the flow of data from PostgreSQL, through the pipeline, and onto disk as Parquet files.
+This sequence diagram outlines the flow of data from PostgreSQL, through the pipeline, and onto disk as Delta CDF Parquet files.
 
 ```mermaid
 sequenceDiagram
     participant PG as PostgreSQL
+    participant SM as SnapshotManager
     participant WR as WalReceiver (Thread 1)
     participant LD as LogicalDecoder
     participant RB as RingBuffer
     participant PW as ParquetWriter (Thread 2)
     participant CM as CheckpointManager
-    participant Disk as Data Lake (Parquet files)
+    participant Disk as Data Lake (Delta CDF files)
+
+    opt First Run (No Checkpoint)
+        SM->>PG: COPY (SELECT * FROM table) TO STDOUT (BINARY)
+        PG-->>SM: Binary Data
+        SM->>RB: push(CDCRow with _change_type=insert)
+    end
 
     PG->>WR: Logical Replication Stream (pgoutput binary)
     WR->>LD: parse_message(raw_bytes)
@@ -237,3 +261,13 @@ sequenceDiagram
         Note over WR,PG: Keeps WAL sender alive<br/>and recycles old WAL
     end
 ```
+
+---
+
+## 5. Testing Strategy
+
+The repository includes a comprehensive `pytest` regression suite located in `tests/test_pipeline.py` designed to ensure that the pipeline remains resilient to database and OS edge cases.
+
+- **`test_delta_cdf_schema`**: Spins up the daemon, injects row mutations, and strictly verifies that the resulting Parquet files conform to the Delta CDF specification (including `_change_type`, `_commit_timestamp`, and `_commit_version`).
+- **`test_snapshot_handoff`**: Pre-seeds PostgreSQL with thousands of rows before daemon startup, and injects live stream changes post-startup to verify that the `SnapshotManager` seamlessly hands off to the `WalReceiver` without dropping or duplicating a single row.
+- **`test_graceful_shutdown`**: Sends OS-level signals (`SIGTERM`) to verify that the daemon correctly catches the interrupt, bypasses spin-locks via the self-pipe trick, forcefully flushes pending Arrow buffers to Parquet, and persists the `.checkpoint` state safely before exiting.
