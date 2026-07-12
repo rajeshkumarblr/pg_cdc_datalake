@@ -39,6 +39,7 @@ set(SOURCES
     src/parquet_writer.cpp
     src/logger.cpp
     src/snapshot_manager.cpp
+    src/web_server.cpp
 )
 
 # ── Build the executable ─────────────────────────────────────────────────────

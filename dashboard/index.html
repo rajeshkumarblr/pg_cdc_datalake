@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CDC Data Lake Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo">
+            <h2>CDC Data Lake</h2>
+        </div>
+        <ul class="nav">
+            <li class="active" data-target="overview">Overview</li>
+            <li data-target="configuration">Configuration</li>
+        </ul>
+    </div>
+
+    <div class="main-content">
+        <div id="overview" class="page active">
+            <header>
+                <h1>Real-Time Metrics</h1>
+                <p>Live stream of Postgres to Parquet conversion metrics</p>
+            </header>
+            
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <h3>Rows Ingested</h3>
+                    <div class="value" id="val-rows">0</div>
+                    <div class="sparkline" id="spark-rows"></div>
+                </div>
+                <div class="metric-card">
+                    <h3>Data Processed</h3>
+                    <div class="value" id="val-bytes">0 B</div>
+                    <div class="sparkline" id="spark-bytes"></div>
+                </div>
+                <div class="metric-card">
+                    <h3>Files Written</h3>
+                    <div class="value" id="val-files">0</div>
+                    <div class="sparkline" id="spark-files"></div>
+                </div>
+                <div class="metric-card">
+                    <h3>Uptime</h3>
+                    <div class="value" id="val-uptime">0s</div>
+                </div>
+                <div class="metric-card full-width">
+                    <h3>Current LSN</h3>
+                    <div class="value" id="val-lsn">0x0</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="configuration" class="page">
+            <header>
+                <h1>Configuration</h1>
+                <p>Edit the daemon's configuration file (cdc_data_lake.conf)</p>
+            </header>
+            
+            <div class="config-card">
+                <form id="config-form">
+                    <textarea id="config-text" rows="20" spellcheck="false"></textarea>
+                    <div class="actions">
+                        <button type="button" id="btn-reload" class="btn-secondary">Reload from Disk</button>
+                        <button type="submit" class="btn-primary">Save Configuration</button>
+                    </div>
+                </form>
+                <div id="config-status" class="status-msg"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

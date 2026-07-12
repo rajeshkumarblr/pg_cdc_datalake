@@ -20,11 +20,13 @@
 
 WalReceiver::WalReceiver(const Config& config,
                          RingBuffer<CDCRow>& ring_buffer,
+                         Metrics& metrics,
                          std::atomic<bool>& shutdown_flag,
                          uint64_t start_lsn,
                          SnapshotManager* snapshot_manager)
     : config_(config),
       ring_buffer_(ring_buffer),
+      metrics_(metrics),
       shutdown_flag_(shutdown_flag),
       start_lsn_(start_lsn),
       last_commit_lsn_(start_lsn),
@@ -127,10 +129,12 @@ bool WalReceiver::connect_and_start() {
     LogicalDecoder parser;
     parser.set_row_callback([this](CDCRow&& row) {
         Logger::info("WalReceiver", "Parsed and pushed row for table '" + row.schema->table_name + "' to RingBuffer");
+        metrics_.rows_ingested++;
         ring_buffer_.push(std::move(row));
     });
     parser.set_commit_callback([this](uint64_t commit_lsn, int64_t /* commit_ts */) {
         last_commit_lsn_.store(commit_lsn);
+        metrics_.current_lsn.store(commit_lsn);
     });
 
     stream_loop(conn, parser);

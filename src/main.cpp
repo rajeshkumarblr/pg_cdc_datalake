@@ -24,7 +24,9 @@
 #include "types.h"
 #include "snapshot_manager.h"
 #include "wal_receiver.h"
+#include "web_server.h"
 #include "logger.h"
+#include "metrics.h"
 
 #include <atomic>
 #include <csignal>
@@ -150,12 +152,16 @@ int main(int argc, char* argv[]) {
 
     SnapshotManager snapshot_manager(config, ring_buffer, g_shutdown);
 
+    Metrics metrics;
+    WebServer web_server(config_path, metrics, g_shutdown);
+    std::thread web_server_thread([&web_server]() { web_server.run(8080); });
+
     Logger::info("Main", "Starting pipeline threads...");
     
-    WalReceiver receiver(config, ring_buffer, g_shutdown, checkpoint.last_confirmed_lsn, &snapshot_manager);
+    WalReceiver receiver(config, ring_buffer, metrics, g_shutdown, checkpoint.last_confirmed_lsn, &snapshot_manager);
     std::thread receiver_thread(&WalReceiver::run, &receiver);
 
-    ParquetWriter writer(config, ring_buffer, g_shutdown, checkpoint_manager, checkpoint);
+    ParquetWriter writer(config, ring_buffer, metrics, g_shutdown, checkpoint_manager, checkpoint);
     std::thread writer_thread(&ParquetWriter::run, &writer);
 
     Logger::info("Main", "Pipeline threads started. Press Ctrl+C to shutdown.");
@@ -166,8 +172,12 @@ int main(int argc, char* argv[]) {
     }
 
     Logger::info("Main", "Shutting down...");
+    web_server.stop();
     ring_buffer.shutdown();
     
+    if (web_server_thread.joinable()) {
+        web_server_thread.join();
+    }
     if (receiver_thread.joinable()) {
         receiver_thread.join();
     }

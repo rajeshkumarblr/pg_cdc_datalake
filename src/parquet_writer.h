@@ -2,6 +2,7 @@
 
 #include "checkpoint.h"
 #include "config.h"
+#include "metrics.h"
 #include "ring_buffer.h"
 #include "types.h"
 
@@ -28,6 +29,7 @@ class ParquetWriter {
 public:
     ParquetWriter(const Config& config,
                   RingBuffer<CDCRow>& ring_buffer,
+                  Metrics& metrics,
                   std::atomic<bool>& shutdown_flag,
                   CheckpointManager& checkpoint_manager,
                   Checkpoint& checkpoint);
@@ -48,6 +50,7 @@ private:
 
     const Config&           config_;
     RingBuffer<CDCRow>&     ring_buffer_;
+    Metrics&                metrics_;
     std::atomic<bool>&      shutdown_flag_;
     CheckpointManager&      checkpoint_manager_;
     Checkpoint&             checkpoint_;

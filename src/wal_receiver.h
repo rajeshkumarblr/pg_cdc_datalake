@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.h"
+#include "metrics.h"
 #include "ring_buffer.h"
 #include "types.h"
 
@@ -30,6 +31,7 @@ class WalReceiver {
 public:
     WalReceiver(const Config& config,
                 RingBuffer<CDCRow>& ring_buffer,
+                Metrics& metrics,
                 std::atomic<bool>& shutdown_flag,
                 uint64_t start_lsn,
                 class SnapshotManager* snapshot_manager = nullptr);
@@ -73,6 +75,7 @@ private:
 
     const Config&           config_;
     RingBuffer<CDCRow>&     ring_buffer_;
+    Metrics&                metrics_;
     std::atomic<bool>&      shutdown_flag_;
     uint64_t                start_lsn_;
     std::atomic<uint64_t>   last_commit_lsn_;

@@ -336,7 +336,8 @@ static void append_row_to_buffer(const CDCRow& row, TableBuffer& buf) {
  * Helper to flush a table buffer to disk as a Parquet file.
  */
 static void flush_table_buffer(TableBuffer& buf, const Config& config, 
-                               Checkpoint& checkpoint, CheckpointManager& checkpoint_manager) {
+                               Checkpoint& checkpoint, CheckpointManager& checkpoint_manager,
+                               Metrics& metrics) {
     Logger::info("ParquetWriter", "Entering flush_table_buffer for table: " + buf.table_name);
     if (buf.row_count == 0) return;
 
@@ -513,6 +514,9 @@ static void flush_table_buffer(TableBuffer& buf, const Config& config,
         checkpoint.last_confirmed_time = current_timestamp_string();
         checkpoint.files_written++;
         checkpoint_manager.save_checkpoint(checkpoint);
+        
+        metrics.files_written++;
+        metrics.bytes_processed += buf.estimated_bytes;
 
         std::cout << "[writer] ✓ " << final_path << " (" << buf.row_count << " rows, " << buf.estimated_bytes << " bytes est.)" << std::endl;
     }
@@ -521,11 +525,13 @@ static void flush_table_buffer(TableBuffer& buf, const Config& config,
 
 ParquetWriter::ParquetWriter(const Config& config,
                              RingBuffer<CDCRow>& ring_buffer,
+                             Metrics& metrics,
                              std::atomic<bool>& shutdown_flag,
                              CheckpointManager& checkpoint_manager,
                              Checkpoint& checkpoint)
     : config_(config),
       ring_buffer_(ring_buffer),
+      metrics_(metrics),
       shutdown_flag_(shutdown_flag),
       checkpoint_manager_(checkpoint_manager),
       checkpoint_(checkpoint) {}
@@ -550,7 +556,7 @@ void ParquetWriter::run() {
                 if (std::string(e.what()) == "SCHEMA_CHANGE_DETECTED") {
                     // Flush the buffer to Parquet
                     Logger::info("ParquetWriter", "Flushing buffer for schema evolution on table " + row.schema->table_name);
-                    flush_table_buffer(table_buffers[row.schema->table_name], config_, checkpoint_, checkpoint_manager_);
+                    flush_table_buffer(table_buffers[row.schema->table_name], config_, checkpoint_, checkpoint_manager_, metrics_);
                     
                     // Re-initialize buffer with the new schema and set the flag
                     table_buffers[row.schema->table_name].init(*row.schema);
@@ -577,7 +583,7 @@ void ParquetWriter::run() {
                 std::string reason = row_limit_flush ? "Row Limit Reached (" + std::to_string(config_.row_flush_threshold) + ")" : (size_flush ? "Size Limit Reached" : "Time Limit Reached");
                 Logger::info("ParquetWriter", "Flush condition met for table '" + table_name + "': " + reason + ". Initiating Parquet write for " + std::to_string(buf.row_count) + " rows.");
                 
-                flush_table_buffer(buf, config_, checkpoint_, checkpoint_manager_);
+                flush_table_buffer(buf, config_, checkpoint_, checkpoint_manager_, metrics_);
                 
                 Logger::info("ParquetWriter", "Successfully flushed and checkpointed table '" + table_name + "'.");
             }
@@ -597,7 +603,7 @@ void ParquetWriter::run() {
                 append_row_to_buffer(row, table_buffers[row.schema->table_name]);
             } catch (const std::exception& e) {
                 if (std::string(e.what()) == "SCHEMA_CHANGE_DETECTED") {
-                    flush_table_buffer(table_buffers[row.schema->table_name], config_, checkpoint_, checkpoint_manager_);
+                    flush_table_buffer(table_buffers[row.schema->table_name], config_, checkpoint_, checkpoint_manager_, metrics_);
                     table_buffers[row.schema->table_name].init(*row.schema);
                     table_buffers[row.schema->table_name].schema_changed = true;
                     append_row_to_buffer(row, table_buffers[row.schema->table_name]);
@@ -607,7 +613,7 @@ void ParquetWriter::run() {
     }
 
     for (auto& [table_name, buf] : table_buffers) {
-        flush_table_buffer(buf, config_, checkpoint_, checkpoint_manager_);
+        flush_table_buffer(buf, config_, checkpoint_, checkpoint_manager_, metrics_);
     }
 
     Logger::info("ParquetWriter", "Shutdown complete. Total files: " + std::to_string(checkpoint_.files_written));

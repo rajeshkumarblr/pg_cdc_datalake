@@ -1,0 +1,19 @@
+# HELP pg_cdc_rows_ingested_total Total number of CDC rows ingested from PostgreSQL.
+# TYPE pg_cdc_rows_ingested_total counter
+pg_cdc_rows_ingested_total 0
+
+# HELP pg_cdc_files_written_total Total number of Parquet files written.
+# TYPE pg_cdc_files_written_total counter
+pg_cdc_files_written_total 0
+
+# HELP pg_cdc_bytes_processed_total Total estimated bytes processed into Parquet.
+# TYPE pg_cdc_bytes_processed_total counter
+pg_cdc_bytes_processed_total 0
+
+# HELP pg_cdc_current_lsn Current WAL Log Sequence Number (as base10 int).
+# TYPE pg_cdc_current_lsn gauge
+pg_cdc_current_lsn 5737719320
+
+# HELP pg_cdc_uptime_seconds Daemon uptime in seconds.
+# TYPE pg_cdc_uptime_seconds gauge
+pg_cdc_uptime_seconds 1411
