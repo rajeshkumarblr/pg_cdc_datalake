@@ -29,7 +29,7 @@ private:
 SnapshotManager::SnapshotManager(const Config& config, RingBuffer<CDCRow>& ring_buffer, std::atomic<bool>& shutdown_flag)
     : config_(config), ring_buffer_(ring_buffer), shutdown_flag_(shutdown_flag) {}
 
-TableSchema SnapshotManager::fetch_schema(const std::string& table_name) {
+std::shared_ptr<const TableSchema> SnapshotManager::fetch_schema(const std::string& table_name) {
     PGConnGuard conn(PQconnectdb(config_.connection_string().c_str()));
     if (PQstatus(conn.get()) != CONNECTION_OK) {
         throw std::runtime_error("Failed to connect for schema fetch");
@@ -45,8 +45,9 @@ TableSchema SnapshotManager::fetch_schema(const std::string& table_name) {
         throw std::runtime_error("Failed to fetch schema for " + table_name);
     }
 
-    TableSchema schema;
-    schema.table_name = table_name;
+    auto schema = std::make_shared<TableSchema>();
+    schema->relation_id = 0; /* Not needed for snapshot */
+    schema->table_name = table_name;
     int rows = PQntuples(res.get());
     for (int i = 0; i < rows; i++) {
         ColumnSchema col;
@@ -54,7 +55,7 @@ TableSchema SnapshotManager::fetch_schema(const std::string& table_name) {
         col.type_oid = std::stoul(PQgetvalue(res.get(), i, 1));
         col.type_modifier = std::stol(PQgetvalue(res.get(), i, 2));
         col.flags = 0;
-        schema.columns.push_back(col);
+        schema->columns.push_back(col);
     }
     return schema;
 }
@@ -62,8 +63,8 @@ TableSchema SnapshotManager::fetch_schema(const std::string& table_name) {
 void SnapshotManager::export_table(const std::string& snapshot_name, const std::string& table_name, uint64_t start_lsn) {
     Logger::info("Snapshot", "Starting snapshot export for table " + table_name);
 
-    TableSchema schema = fetch_schema(table_name);
-    if (schema.columns.empty()) {
+    auto schema = fetch_schema(table_name);
+    if (schema->columns.empty()) {
         Logger::info("Snapshot", "Table " + table_name + " has no columns or doesn't exist. Skipping.");
         return;
     }
@@ -118,7 +119,6 @@ void SnapshotManager::export_table(const std::string& snapshot_name, const std::
                 }
 
                 CDCRow cdc_row;
-                cdc_row.table_name = table_name;
                 cdc_row.operation = Operation::INSERT;
                 cdc_row.lsn = start_lsn;
                 cdc_row.commit_timestamp_us = ts;
@@ -148,11 +148,8 @@ void SnapshotManager::export_table(const std::string& snapshot_name, const std::
                 }
 
                 // Push to ring buffer (blocking)
-                while (!shutdown_flag_.load()) {
-                    if (ring_buffer_.push(std::move(cdc_row))) {
-                        break;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                if (!ring_buffer_.push(std::move(cdc_row))) {
+                    break; // shutdown signaled
                 }
                 rows_exported++;
             }

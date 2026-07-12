@@ -39,7 +39,11 @@ def clean_env(db_connection):
         shutil.rmtree(DATA_DIR)
     os.makedirs(DATA_DIR, exist_ok=True)
     
-    # TRUNCATE tables
+    # TRUNCATE tables and reset schema changes
+    try:
+        cur.execute("ALTER TABLE products DROP COLUMN IF EXISTS description;")
+    except Exception as e:
+        pass
     cur.execute("TRUNCATE TABLE orders, order_items, products CASCADE;")
     
     yield cur

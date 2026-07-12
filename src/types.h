@@ -1,12 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 /*
  * CDC operation types corresponding to pgoutput message types.
+ * ...
  */
 enum class Operation : char {
     INSERT = 'I',
@@ -43,7 +45,6 @@ struct TableSchema {
  * from the WAL receiver thread to the Parquet writer thread.
  */
 struct CDCRow {
-    std::string table_name;
     Operation   operation;
     uint64_t    lsn;
     int64_t     commit_timestamp_us;  /* microseconds since 2000-01-01 (PG epoch) */
@@ -59,5 +60,5 @@ struct CDCRow {
     std::vector<std::optional<std::string>> new_values;
 
     /* Schema of the table this row belongs to */
-    TableSchema schema;
+    std::shared_ptr<const TableSchema> schema;
 };

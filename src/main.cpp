@@ -38,12 +38,19 @@
 /* Global shutdown flag — set by signal handlers */
 static std::atomic<bool> g_shutdown{false};
 
+/* Self-pipe to wake up the main thread instantly on signal */
+static int g_shutdown_pipe[2];
+
 static void signal_handler(int signum) {
     const char* name = (signum == SIGINT) ? "SIGINT" : "SIGTERM";
     /* write() is async-signal-safe, unlike std::cout */
     const char* msg = "\n[main] Shutdown signal received. Flushing buffers...\n";
     write(STDOUT_FILENO, msg, strlen(msg));
     g_shutdown.store(true);
+    
+    /* Write to the self-pipe to wake up the main thread instantly */
+    char c = 'x';
+    write(g_shutdown_pipe[1], &c, 1);
 }
 
 static void print_usage(const char* prog) {
@@ -96,6 +103,10 @@ static void print_startup_banner(const Config& config) {
 }
 
 static void setup_signal_handlers() {
+    if (pipe(g_shutdown_pipe) == -1) {
+        perror("pipe");
+        exit(1);
+    }
     struct sigaction sa;
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
@@ -149,8 +160,9 @@ int main(int argc, char* argv[]) {
 
     Logger::info("Main", "Pipeline threads started. Press Ctrl+C to shutdown.");
 
-    while (!g_shutdown.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+    char dummy;
+    if (read(g_shutdown_pipe[0], &dummy, 1) == -1) {
+        // Ignored
     }
 
     Logger::info("Main", "Shutting down...");

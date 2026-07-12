@@ -126,7 +126,7 @@ bool WalReceiver::connect_and_start() {
 
     LogicalDecoder parser;
     parser.set_row_callback([this](CDCRow&& row) {
-        Logger::info("WalReceiver", "Parsed and pushed row for table '" + row.table_name + "' to RingBuffer");
+        Logger::info("WalReceiver", "Parsed and pushed row for table '" + row.schema->table_name + "' to RingBuffer");
         ring_buffer_.push(std::move(row));
     });
     parser.set_commit_callback([this](uint64_t commit_lsn, int64_t /* commit_ts */) {

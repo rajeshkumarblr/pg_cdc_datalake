@@ -13,6 +13,8 @@
 #include <nlohmann/json.hpp>
 
 #include "logger.h"
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <arrow/api.h>
 #include <arrow/io/file.h>
@@ -122,6 +124,9 @@ struct TableBuffer {
     size_t   commit_version = 0;
 
     bool initialized = false;
+    bool initialized_version = false;
+    bool schema_changed = false;
+    size_t uncompacted_commits = 0;
 
     void init(const TableSchema& s) {
         schema = s;
@@ -165,17 +170,102 @@ struct TableBuffer {
 };
 
 /*
+ * Compare two TableSchemas to detect DDL changes
+ */
+static bool schemas_are_equal(const TableSchema& a, const TableSchema& b) {
+    if (a.columns.size() != b.columns.size()) return false;
+    for (size_t i = 0; i < a.columns.size(); ++i) {
+        if (a.columns[i].name != b.columns[i].name) return false;
+        if (a.columns[i].type_oid != b.columns[i].type_oid) return false;
+    }
+    return true;
+}
+
+/*
+ * Helper to get the latest commit version by scanning _delta_log/
+ */
+static size_t get_latest_delta_version(const std::string& delta_log_dir) {
+    if (!std::filesystem::exists(delta_log_dir)) return 0;
+    size_t max_version = 0;
+    bool found = false;
+    for (const auto& entry : std::filesystem::directory_iterator(delta_log_dir)) {
+        if (entry.is_regular_file()) {
+            std::string filename = entry.path().filename().string();
+            if (filename.size() == 25 && filename.substr(filename.length() - 5) == ".json") {
+                try {
+                    size_t ver = std::stoull(filename.substr(0, 20));
+                    if (!found || ver > max_version) {
+                        max_version = ver;
+                        found = true;
+                    }
+                } catch (...) {}
+            }
+        }
+    }
+    return found ? max_version + 1 : 0;
+}
+
+/*
  * Helper to append a single row to a table buffer.
  */
+struct ParsedValue {
+    bool is_null = true;
+    uint32_t type_oid = 0;
+    union {
+        int16_t i16;
+        int32_t i32;
+        int64_t i64;
+        float f32;
+        double f64;
+        bool b;
+    } val;
+    std::string str_val;
+};
+
 static void append_row_to_buffer(const CDCRow& row, TableBuffer& buf) {
-    Logger::info("ParquetWriter", "Entering append_row_to_buffer for table: " + row.table_name);
+    Logger::info("ParquetWriter", "Entering append_row_to_buffer for table: " + row.schema->table_name);
     if (!buf.initialized) {
-        buf.init(row.schema);
+        buf.init(*row.schema);
         std::cout << "[writer] Initialized buffer for table '"
-                  << row.table_name << "' ("
-                  << row.schema.columns.size() << " columns)" << std::endl;
+                  << row.schema->table_name << "' ("
+                  << row.schema->columns.size() << " columns)" << std::endl;
+    } else if (!schemas_are_equal(buf.schema, *row.schema)) {
+        Logger::info("ParquetWriter", "Schema change detected for table: " + row.schema->table_name);
+        throw std::runtime_error("SCHEMA_CHANGE_DETECTED");
     }
 
+    const auto& values = (row.operation == Operation::DELETE) ? row.old_values : row.new_values;
+
+    // Phase 1: Parse all values
+    std::vector<ParsedValue> parsed_values(buf.col_builders.size());
+    try {
+        for (size_t i = 0; i < buf.col_builders.size(); ++i) {
+            if (i < values.size() && values[i].has_value()) {
+                const std::string& val = values[i].value();
+                uint32_t type_oid = row.schema->columns[i].type_oid;
+                parsed_values[i].is_null = false;
+                parsed_values[i].type_oid = type_oid;
+
+                switch (type_oid) {
+                    case 21: parsed_values[i].val.i16 = static_cast<int16_t>(std::stoi(val)); break;
+                    case 23: parsed_values[i].val.i32 = static_cast<int32_t>(std::stoi(val)); break;
+                    case 20: parsed_values[i].val.i64 = static_cast<int64_t>(std::stoll(val)); break;
+                    case 700: parsed_values[i].val.f32 = std::stof(val); break;
+                    case 701:
+                    case 1700: parsed_values[i].val.f64 = std::stod(val); break;
+                    case 16: parsed_values[i].val.b = (val == "t" || val == "true" || val == "1"); break;
+                    default: parsed_values[i].str_val = val; break;
+                }
+            } else {
+                parsed_values[i].is_null = true;
+            }
+        }
+    } catch (const std::exception& e) {
+        Logger::info("ParquetWriter", "Failed to parse row for table " + row.schema->table_name + ", dropping row. Error: " + std::string(e.what()));
+        return; // Drop row entirely, do not append to ANY builders
+    }
+
+    // Phase 2: Append to builders
     if (buf.row_count == 0) {
         buf.start_lsn = row.lsn;
         buf.start_time = row.commit_timestamp_us;
@@ -189,55 +279,53 @@ static void append_row_to_buffer(const CDCRow& row, TableBuffer& buf) {
     (void)buf.ts_builder->Append(row.commit_timestamp_us);
     buf.estimated_bytes += 32;
 
-    const auto& values = (row.operation == Operation::DELETE) ? row.old_values : row.new_values;
-
     for (size_t i = 0; i < buf.col_builders.size(); ++i) {
-        if (i < values.size() && values[i].has_value()) {
-            const std::string& val = values[i].value();
-            uint32_t type_oid = row.schema.columns[i].type_oid;
-            try {
-                switch (type_oid) {
-                    case 21: {
-                        auto b = std::static_pointer_cast<arrow::Int16Builder>(buf.col_builders[i]);
-                        (void)b->Append(static_cast<int16_t>(std::stoi(val)));
-                        break;
-                    }
-                    case 23: {
-                        auto b = std::static_pointer_cast<arrow::Int32Builder>(buf.col_builders[i]);
-                        (void)b->Append(static_cast<int32_t>(std::stoi(val)));
-                        break;
-                    }
-                    case 20: {
-                        auto b = std::static_pointer_cast<arrow::Int64Builder>(buf.col_builders[i]);
-                        (void)b->Append(static_cast<int64_t>(std::stoll(val)));
-                        break;
-                    }
-                    case 700: {
-                        auto b = std::static_pointer_cast<arrow::FloatBuilder>(buf.col_builders[i]);
-                        (void)b->Append(std::stof(val));
-                        break;
-                    }
-                    case 701:
-                    case 1700: {
-                        auto b = std::static_pointer_cast<arrow::DoubleBuilder>(buf.col_builders[i]);
-                        (void)b->Append(std::stod(val));
-                        break;
-                    }
-                    case 16: {
-                        auto b = std::static_pointer_cast<arrow::BooleanBuilder>(buf.col_builders[i]);
-                        (void)b->Append(val == "t" || val == "true" || val == "1");
-                        break;
-                    }
-                    default: {
-                        auto b = std::static_pointer_cast<arrow::StringBuilder>(buf.col_builders[i]);
-                        (void)b->Append(val);
-                        break;
-                    }
+        if (!parsed_values[i].is_null) {
+            switch (parsed_values[i].type_oid) {
+                case 21: {
+                    auto b = std::static_pointer_cast<arrow::Int16Builder>(buf.col_builders[i]);
+                    (void)b->Append(parsed_values[i].val.i16);
+                    buf.estimated_bytes += 2;
+                    break;
                 }
-            } catch (...) {
-                (void)buf.col_builders[i]->AppendNull();
+                case 23: {
+                    auto b = std::static_pointer_cast<arrow::Int32Builder>(buf.col_builders[i]);
+                    (void)b->Append(parsed_values[i].val.i32);
+                    buf.estimated_bytes += 4;
+                    break;
+                }
+                case 20: {
+                    auto b = std::static_pointer_cast<arrow::Int64Builder>(buf.col_builders[i]);
+                    (void)b->Append(parsed_values[i].val.i64);
+                    buf.estimated_bytes += 8;
+                    break;
+                }
+                case 700: {
+                    auto b = std::static_pointer_cast<arrow::FloatBuilder>(buf.col_builders[i]);
+                    (void)b->Append(parsed_values[i].val.f32);
+                    buf.estimated_bytes += 4;
+                    break;
+                }
+                case 701:
+                case 1700: {
+                    auto b = std::static_pointer_cast<arrow::DoubleBuilder>(buf.col_builders[i]);
+                    (void)b->Append(parsed_values[i].val.f64);
+                    buf.estimated_bytes += 8;
+                    break;
+                }
+                case 16: {
+                    auto b = std::static_pointer_cast<arrow::BooleanBuilder>(buf.col_builders[i]);
+                    (void)b->Append(parsed_values[i].val.b);
+                    buf.estimated_bytes += 1;
+                    break;
+                }
+                default: {
+                    auto b = std::static_pointer_cast<arrow::StringBuilder>(buf.col_builders[i]);
+                    (void)b->Append(parsed_values[i].str_val);
+                    buf.estimated_bytes += parsed_values[i].str_val.size();
+                    break;
+                }
             }
-            buf.estimated_bytes += val.size();
         } else {
             (void)buf.col_builders[i]->AppendNull();
         }
@@ -322,63 +410,103 @@ static void flush_table_buffer(TableBuffer& buf, const Config& config,
         std::string delta_log_dir = table_dir + "/_delta_log";
         std::filesystem::create_directories(delta_log_dir);
         
-        std::ostringstream version_ss;
-        version_ss << std::setfill('0') << std::setw(20) << buf.commit_version;
-        std::string delta_log_file = delta_log_dir + "/" + version_ss.str() + ".json";
+        if (!buf.initialized_version) {
+            buf.commit_version = get_latest_delta_version(delta_log_dir);
+            buf.initialized_version = true;
+        }
         
-        nlohmann::json commitInfo = {
-            {"commitInfo", {
-                {"timestamp", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()},
-                {"operation", "WRITE"}
-            }}
-        };
+        bool wrote_log = false;
+        int retries = 0;
         
-        nlohmann::json addAction = {
-            {"add", {
-                {"path", filename},
-                {"size", std::filesystem::file_size(final_path)},
-                {"partitionValues", nlohmann::json::object()},
-                {"modificationTime", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()},
-                {"dataChange", true}
-            }}
-        };
-        
-        std::ofstream delta_out(delta_log_file);
-        if (delta_out.is_open()) {
-            if (buf.commit_version == 0) {
-                // First commit needs protocol and metadata
-                nlohmann::json protocolAction = {{"protocol", {{"minReaderVersion", 1}, {"minWriterVersion", 2}}}};
-                
-                nlohmann::json schemaFields = nlohmann::json::array();
-                schemaFields.push_back({{"name", "_change_type"}, {"type", "string"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
-                schemaFields.push_back({{"name", "_commit_version"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
-                schemaFields.push_back({{"name", "_commit_timestamp"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
-                for (const auto& col : buf.schema.columns) {
-                    schemaFields.push_back({{"name", col.name}, {"type", oid_to_delta_type(col.type_oid)}, {"nullable", true}, {"metadata", nlohmann::json::object()}});
+        while (!wrote_log && retries < 5) {
+            std::ostringstream version_ss;
+            version_ss << std::setfill('0') << std::setw(20) << buf.commit_version;
+            std::string delta_log_file = delta_log_dir + "/" + version_ss.str() + ".json";
+            
+            int fd = open(delta_log_file.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+            if (fd < 0) {
+                if (errno == EEXIST) {
+                    buf.commit_version++;
+                    retries++;
+                    continue;
+                } else {
+                    std::cerr << "[writer] failed to open delta log: " << strerror(errno) << std::endl;
+                    break;
                 }
-                nlohmann::json schemaObj = {{"type", "struct"}, {"fields", schemaFields}};
+            }
+            
+            FILE* f = fdopen(fd, "w");
+            if (f) {
+                std::string content = "";
                 
-                nlohmann::json metadataAction = {
-                    {"metaData", {
-                        {"id", "cdc-" + buf.table_name},
-                        {"format", {{"provider", "parquet"}, {"options", nlohmann::json::object()}}},
-                        {"schemaString", schemaObj.dump()},
-
-                        {"partitionColumns", nlohmann::json::array()},
-                        {"configuration", {
-                            {"delta.enableChangeDataFeed", "true"}
-                        }}
+                nlohmann::json commitInfo = {
+                    {"commitInfo", {
+                        {"timestamp", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()},
+                        {"operation", "WRITE"}
                     }}
                 };
-                delta_out << protocolAction.dump() << "\n";
-                delta_out << metadataAction.dump() << "\n";
+                
+                nlohmann::json addAction = {
+                    {"add", {
+                        {"path", filename},
+                        {"size", std::filesystem::file_size(final_path)},
+                        {"partitionValues", nlohmann::json::object()},
+                        {"modificationTime", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()},
+                        {"dataChange", true}
+                    }}
+                };
+                
+                if (buf.commit_version == 0 || buf.schema_changed) {
+                    // First commit or schema evolution needs protocol and metadata
+                    nlohmann::json protocolAction = {{"protocol", {{"minReaderVersion", 1}, {"minWriterVersion", 2}}}};
+                    
+                    nlohmann::json schemaFields = nlohmann::json::array();
+                    schemaFields.push_back({{"name", "_change_type"}, {"type", "string"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
+                    schemaFields.push_back({{"name", "_commit_version"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
+                    schemaFields.push_back({{"name", "_commit_timestamp"}, {"type", "long"}, {"nullable", false}, {"metadata", nlohmann::json::object()}});
+                    for (const auto& col : buf.schema.columns) {
+                        schemaFields.push_back({{"name", col.name}, {"type", oid_to_delta_type(col.type_oid)}, {"nullable", true}, {"metadata", nlohmann::json::object()}});
+                    }
+                    nlohmann::json schemaObj = {{"type", "struct"}, {"fields", schemaFields}};
+                    
+                    nlohmann::json metadataAction = {
+                        {"metaData", {
+                            {"id", "cdc-" + buf.table_name},
+                            {"format", {{"provider", "parquet"}, {"options", nlohmann::json::object()}}},
+                            {"schemaString", schemaObj.dump()},
+                            {"partitionColumns", nlohmann::json::array()},
+                            {"configuration", {
+                                {"delta.enableChangeDataFeed", "true"}
+                            }}
+                        }}
+                    };
+                    content += protocolAction.dump() + "\n" + metadataAction.dump() + "\n";
+                }
+                content += commitInfo.dump() + "\n" + addAction.dump() + "\n";
+                
+                fwrite(content.c_str(), 1, content.size(), f);
+                fclose(f);
+                wrote_log = true;
+                buf.commit_version++;
+                buf.uncompacted_commits++;
+                buf.schema_changed = false;
+            } else {
+                std::cerr << "[writer] fdopen failed" << std::endl;
+                close(fd);
+                break;
             }
-            delta_out << commitInfo.dump() << "\n";
-            delta_out << addAction.dump() << "\n";
-            delta_out.close();
-            buf.commit_version++;
-        } else {
-            std::cerr << "[writer] failed to write delta log: " << delta_log_file << std::endl;
+        }
+        
+        if (!wrote_log) {
+            std::cerr << "[writer] Fatal error: Could not write delta log due to OCC conflict or IO error." << std::endl;
+            exit(1);
+        }
+
+        // Compaction
+        if (buf.uncompacted_commits >= 10) {
+            std::string cmd = "python3 delta_compact.py " + table_dir + " &";
+            system(cmd.c_str());
+            buf.uncompacted_commits = 0;
         }
 
         checkpoint.last_confirmed_lsn = buf.end_lsn;
@@ -416,7 +544,24 @@ void ParquetWriter::run() {
         }
 
         for (auto& row : rows) {
-            append_row_to_buffer(row, table_buffers[row.table_name]);
+            try {
+                append_row_to_buffer(row, table_buffers[row.schema->table_name]);
+            } catch (const std::exception& e) {
+                if (std::string(e.what()) == "SCHEMA_CHANGE_DETECTED") {
+                    // Flush the buffer to Parquet
+                    Logger::info("ParquetWriter", "Flushing buffer for schema evolution on table " + row.schema->table_name);
+                    flush_table_buffer(table_buffers[row.schema->table_name], config_, checkpoint_, checkpoint_manager_);
+                    
+                    // Re-initialize buffer with the new schema and set the flag
+                    table_buffers[row.schema->table_name].init(*row.schema);
+                    table_buffers[row.schema->table_name].schema_changed = true;
+                    
+                    // Retry appending the row
+                    append_row_to_buffer(row, table_buffers[row.schema->table_name]);
+                } else {
+                    Logger::info("ParquetWriter", "Error appending row: " + std::string(e.what()));
+                }
+            }
         }
 
         auto now = std::chrono::steady_clock::now();
@@ -448,7 +593,16 @@ void ParquetWriter::run() {
         auto rows = ring_buffer_.pop_batch(1000, std::chrono::milliseconds(100));
         if (rows.empty()) break;
         for (auto& row : rows) {
-            append_row_to_buffer(row, table_buffers[row.table_name]);
+            try {
+                append_row_to_buffer(row, table_buffers[row.schema->table_name]);
+            } catch (const std::exception& e) {
+                if (std::string(e.what()) == "SCHEMA_CHANGE_DETECTED") {
+                    flush_table_buffer(table_buffers[row.schema->table_name], config_, checkpoint_, checkpoint_manager_);
+                    table_buffers[row.schema->table_name].init(*row.schema);
+                    table_buffers[row.schema->table_name].schema_changed = true;
+                    append_row_to_buffer(row, table_buffers[row.schema->table_name]);
+                }
+            }
         }
     }
 

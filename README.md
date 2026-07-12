@@ -13,10 +13,14 @@ The project implements a 3-tier architecture designed for extremely low latency 
 ## Key Features
 
 - **High-Speed Snapshotting:** Automatically extracts historical data using PostgreSQL's `EXPORT_SNAPSHOT` mechanism before starting the live stream.
-- **Delta Lake Integration:** Writes fully compatible Delta protocol transaction logs.
+- **Delta Lake Integration:** Writes fully compatible Delta protocol transaction logs natively.
+- **Automatic Schema Evolution:** Dynamically monitors DDL changes on the fly. When a schema change is detected, it automatically finalizes pending buffers and commits a new Delta `metaData` action containing the new table schema.
+- **Optimistic Concurrency Control (OCC):** Safely supports multiple concurrent writers through atomic POSIX system calls (`O_EXCL`), ensuring Delta logs are never corrupted or overwritten.
+- **Automated Log Compaction:** Actively tracks uncompacted Delta JSON commits and asynchronously aggregates them into `.checkpoint.parquet` files every 10 commits to keep query planning lightning-fast.
 - **Robust Checkpointing:** Uses a lightweight JSON checkpoint to track committed LSNs across restarts, ensuring at-least-once delivery semantics without data loss.
 - **Configurable Batching:** Allows fine-tuning of Parquet flush intervals (by time, row count, or MB size limits) via a simple configuration file.
 - **End-to-End Analytics Demo:** Includes Python scripts for simulating live eCommerce traffic and performing live streaming aggregations using PySpark.
+
 
 ## Dependencies
 
@@ -27,6 +31,7 @@ Ensure the following libraries are installed on your system before building:
 - **CMake** (v3.10+)
 - **nlohmann-json** (for JSON parsing and Delta log generation)
 - **OpenSSL**
+- **Python 3** (for Delta log compaction and analytics, e.g., `pip install deltalake pytest pyarrow pandas`)
 
 ## Building the Project
 

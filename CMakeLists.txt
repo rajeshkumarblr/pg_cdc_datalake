@@ -3,6 +3,7 @@ project(cdc_data_lake CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ── Find PostgreSQL (for libpq) ──────────────────────────────────────────────
 # Use pg_config to locate the include and library directories.

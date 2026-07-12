@@ -3,7 +3,7 @@ import glob
 import os
 import time
 import pyarrow.parquet as pq
-
+import json
 DATA_DIR = "data"
 
 def wait_for_parquet(table_name, max_sec=10):
@@ -79,3 +79,64 @@ def test_graceful_shutdown(clean_env, run_daemon):
     
     # Verify checkpoint exists
     assert os.path.exists(os.path.join(DATA_DIR, ".checkpoint"))
+
+def test_schema_evolution(clean_env, run_daemon):
+    """Verify that adding a column dynamically updates the Delta schema."""
+    run_daemon.start()
+    
+    clean_env.execute("INSERT INTO products (id, name, category, price) VALUES (1, 'TestProduct', 'A', 10.0)")
+    
+    # Wait for the first row to be processed
+    time.sleep(1)
+    
+    # Alter table (Schema Evolution)
+    clean_env.execute("ALTER TABLE products ADD COLUMN description TEXT")
+    
+    # Insert new row with the new column
+    clean_env.execute("INSERT INTO products (id, name, category, price, description) VALUES (2, 'TestProd2', 'B', 20.0, 'new desc')")
+    
+    time.sleep(1)
+    run_daemon.stop()
+    
+    # Check that Delta Log contains the new schema
+    delta_log_dir = os.path.join(DATA_DIR, "products", "_delta_log")
+    json_files = sorted(glob.glob(os.path.join(delta_log_dir, "*.json")))
+    
+    assert len(json_files) >= 2, "Expected at least 2 delta log commits due to schema evolution flush"
+    
+    # Read the latest json file to check for metadata update
+    schema_updated = False
+    for f in json_files:
+        with open(f, 'r') as file:
+            content = file.read()
+            if "description" in content and "metaData" in content:
+                schema_updated = True
+                
+    assert schema_updated, "Delta log did not contain updated metaData with new description column"
+
+def test_occ_and_restart(clean_env, run_daemon):
+    """Verify OCC mechanism doesn't overwrite existing commits on daemon restart."""
+    run_daemon.start()
+    clean_env.execute("INSERT INTO products (id, name, category, price) VALUES (1, 'Test1', 'A', 10.0)")
+    time.sleep(1)
+    run_daemon.stop()
+    
+    delta_log_dir = os.path.join(DATA_DIR, "products", "_delta_log")
+    files_run1 = set(glob.glob(os.path.join(delta_log_dir, "*.json")))
+    assert len(files_run1) == 1
+    
+    # Start again
+    run_daemon.start()
+    clean_env.execute("INSERT INTO products (id, name, category, price) VALUES (2, 'Test2', 'A', 10.0)")
+    time.sleep(1)
+    run_daemon.stop()
+    
+    files_run2 = set(glob.glob(os.path.join(delta_log_dir, "*.json")))
+    assert len(files_run2) == 2
+    
+    # Ensure they are different
+    new_files = files_run2 - files_run1
+    assert len(new_files) == 1
+    
+    new_file = new_files.pop()
+    assert "00000000000000000001.json" in new_file

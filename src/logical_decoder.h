@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -54,7 +55,7 @@ public:
     /*
      * Get the cached schema for a relation_id. Returns nullptr if not cached.
      */
-    const TableSchema* get_schema(uint32_t relation_id) const;
+    std::shared_ptr<const TableSchema> get_schema(uint32_t relation_id) const;
 
 private:
     void parse_relation(const char* data, int len);
@@ -73,7 +74,7 @@ private:
     parse_tuple_data(const char* data, int len, int& offset);
 
     /* Relation cache: relation_id → TableSchema */
-    std::unordered_map<uint32_t, TableSchema> schemas_;
+    std::unordered_map<uint32_t, std::shared_ptr<const TableSchema>> schemas_;
 
     /* Current transaction context */
     uint64_t current_xact_lsn_ = 0;

@@ -75,17 +75,16 @@ This is the **bridge** between the producers (SnapshotManager/WalReceiver) and T
 - **Batching**: Allows the consumer to pull up to 1000 rows at a time, drastically reducing lock contention and improving throughput.
 
 ### F. The Parquet Writer Thread (`parquet_writer.cpp`)
-This is **Thread 2** (The Consumer). It is responsible for accumulating rows and compressing them into Parquet files formatted for Delta Lake CDF.
+This is **Thread 2** (The Consumer). It is responsible for accumulating rows and compressing them into Parquet files formatted for Delta Lake CDF, while maintaining the Delta Lake transaction log (`_delta_log`).
 
 In this component, high-throughput conversion from row-oriented PostgreSQL data to column-oriented analytics format takes place:
 - **`TableBuffer` Accumulation**: The writer maintains a distinct in-memory `TableBuffer` for each PostgreSQL table it tracks. As rows (`CDCRow`) are dequeued from the `RingBuffer`, they are immediately routed to their corresponding `TableBuffer`.
 - **Apache Arrow Builders**: Inside the `TableBuffer`, data is appended to in-memory columnar structures using `arrow::StringBuilder` and `arrow::Int64Builder`. Arrow efficiently pivots the row-based event stream into a dense column-based memory representation.
-- **Flush Conditions**: The writer periodically iterates over all active `TableBuffers` and checks two flush conditions:
-  1. **Size Limit**: Has the buffer accumulated the configured file size limit (e.g., ~1MB of data)?
-  2. **Time Limit**: Has the buffer hit the timeout limit (e.g., 60 seconds since the last flush)?
-- **Parquet File Writing (`flush_table_buffer`)**: When a flush condition is met, the `TableBuffer` finalizes the Arrow arrays, constructing an `arrow::Table`. This table is encoded to disk with **Snappy compression**, embedding key schema metadata and CDC boundaries (like start/end LSN and timestamp boundaries) directly into the Parquet footer.
-- **Spark-Friendly Partitioning**: Files are segregated into isolated directories named identically to the source table (e.g., `output_dir/my_table/...`).
-- **Atomic Renames**: To guarantee data integrity for downstream analytics engines (like Apache Spark or Trino), files are initially staged with a `.tmp` extension. Only when the file is completely encoded and closed is an atomic system rename performed to change the extension to `.parquet`.
+- **Schema Evolution**: The writer actively monitors incoming rows for DDL changes. If a new column is detected, it raises a `SCHEMA_CHANGE_DETECTED` exception, flushes the current Arrow buffers to a Parquet file, and dynamically writes a new Delta `metaData` action containing the updated schema to the `_delta_log`.
+- **Flush Conditions**: The writer periodically iterates over all active `TableBuffers` and checks flush conditions (e.g., Size Limit, Time Limit, or Schema Change).
+- **Parquet File Writing (`flush_table_buffer`)**: When a flush condition is met, the `TableBuffer` finalizes the Arrow arrays into an `arrow::Table`. This table is encoded to disk with **Snappy compression**.
+- **Delta Lake Transaction Log**: After atomic renaming of the `.tmp` Parquet file, the writer creates a Delta Lake commit (a `.json` file in `_delta_log/`). It uses **Optimistic Concurrency Control (OCC)** via atomic `O_EXCL` POSIX system calls to ensure that multiple writers do not overwrite each other's commits.
+- **Log Compaction**: To keep query performance fast and prevent the `_delta_log` from growing indefinitely, the writer tracks the number of uncompacted JSON commits. Every 10 commits, it asynchronously spawns a compaction process (`delta_compact.py`) which aggregates the JSON actions into a `.checkpoint.parquet` file and updates the `_last_checkpoint` pointer.
 
 ### G. Checkpointing & Crash Recovery (`checkpoint.cpp`)
 To ensure **At-Least-Once Delivery** and zero data loss during crashes:

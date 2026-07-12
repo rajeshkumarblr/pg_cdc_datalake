@@ -117,14 +117,14 @@ void LogicalDecoder::parse_message(const char* data, int len) {
 void LogicalDecoder::parse_relation(const char* data, int len) {
     int offset = 0;
 
-    TableSchema schema;
-    schema.relation_id = read_uint32(data, offset);
-    schema.schema_name = read_string(data, offset);
-    schema.table_name  = read_string(data, offset);
-    schema.replica_identity = static_cast<char>(read_uint8(data, offset));
+    auto schema = std::make_shared<TableSchema>();
+    schema->relation_id = read_uint32(data, offset);
+    schema->schema_name = read_string(data, offset);
+    schema->table_name  = read_string(data, offset);
+    schema->replica_identity = static_cast<char>(read_uint8(data, offset));
 
     uint16_t num_cols = read_uint16(data, offset);
-    schema.columns.reserve(num_cols);
+    schema->columns.reserve(num_cols);
 
     for (uint16_t i = 0; i < num_cols; ++i) {
         ColumnSchema col;
@@ -132,14 +132,14 @@ void LogicalDecoder::parse_relation(const char* data, int len) {
         col.name          = read_string(data, offset);
         col.type_oid      = read_uint32(data, offset);
         col.type_modifier = static_cast<int32_t>(read_uint32(data, offset));
-        schema.columns.push_back(std::move(col));
+        schema->columns.push_back(std::move(col));
     }
 
-    std::cout << "[parser] Relation: " << schema.schema_name << "."
-              << schema.table_name << " (id=" << schema.relation_id
+    std::cout << "[parser] Relation: " << schema->schema_name << "."
+              << schema->table_name << " (id=" << schema->relation_id
               << ", cols=" << num_cols << ")" << std::endl;
 
-    schemas_[schema.relation_id] = std::move(schema);
+    schemas_[schema->relation_id] = std::move(schema);
 }
 
 /*
@@ -180,7 +180,6 @@ void LogicalDecoder::parse_insert(const char* data, int len) {
     }
 
     CDCRow row;
-    row.table_name = it->second.table_name;
     row.operation = Operation::INSERT;
     row.lsn = current_xact_lsn_;
     row.commit_timestamp_us = current_xact_timestamp_us_;
@@ -212,7 +211,6 @@ void LogicalDecoder::parse_update(const char* data, int len) {
     }
 
     CDCRow row;
-    row.table_name = it->second.table_name;
     row.operation = Operation::UPDATE;
     row.lsn = current_xact_lsn_;
     row.commit_timestamp_us = current_xact_timestamp_us_;
@@ -264,7 +262,6 @@ void LogicalDecoder::parse_delete(const char* data, int len) {
     }
 
     CDCRow row;
-    row.table_name = it->second.table_name;
     row.operation = Operation::DELETE;
     row.lsn = current_xact_lsn_;
     row.commit_timestamp_us = current_xact_timestamp_us_;
@@ -348,8 +345,8 @@ LogicalDecoder::parse_tuple_data(const char* data, int len, int& offset) {
     return values;
 }
 
-const TableSchema* LogicalDecoder::get_schema(uint32_t relation_id) const {
+std::shared_ptr<const TableSchema> LogicalDecoder::get_schema(uint32_t relation_id) const {
     auto it = schemas_.find(relation_id);
-    return (it != schemas_.end()) ? &it->second : nullptr;
+    return (it != schemas_.end()) ? it->second : nullptr;
 }
 
