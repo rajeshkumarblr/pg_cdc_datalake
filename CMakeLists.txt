@@ -29,8 +29,7 @@ message(STATUS "Arrow version: ${Arrow_VERSION}")
 message(STATUS "Parquet found: yes")
 
 # ── Source files ──────────────────────────────────────────────────────────────
-set(SOURCES
-    src/main.cpp
+set(LIB_SOURCES
     src/config.cpp
     src/checkpoint.cpp
     src/pg_setup.cpp
@@ -42,24 +41,30 @@ set(SOURCES
     src/web_server.cpp
 )
 
-# ── Build the executable ─────────────────────────────────────────────────────
-add_executable(cdc_data_lake ${SOURCES})
+# ── Build Core Library ────────────────────────────────────────────────────────
+add_library(cdc_data_lake_core STATIC ${LIB_SOURCES})
 
-target_include_directories(cdc_data_lake PRIVATE
+target_include_directories(cdc_data_lake_core PUBLIC
     ${PG_INCLUDEDIR}
-    src/
     include/
 )
 
-target_link_directories(cdc_data_lake PRIVATE
+target_link_directories(cdc_data_lake_core PUBLIC
     ${PG_LIBDIR}
 )
 
-target_link_libraries(cdc_data_lake PRIVATE
+target_link_libraries(cdc_data_lake_core PUBLIC
     pq                  # libpq (PostgreSQL client library)
     Arrow::arrow_shared
     Parquet::parquet_shared
     pthread             # For std::thread
+)
+
+# ── Build the Executable ──────────────────────────────────────────────────────
+add_executable(cdc_data_lake src/main.cpp)
+
+target_link_libraries(cdc_data_lake PRIVATE
+    cdc_data_lake_core
 )
 
 # ── Install ──────────────────────────────────────────────────────────────────

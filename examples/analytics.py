@@ -14,8 +14,8 @@ def main():
 
     spark.sparkContext.setLogLevel("WARN")
 
-    products_path = "/home/documentdb/pg_cdc_datalake/data/products"
-    target_path = "/home/documentdb/pg_cdc_datalake/data/target_products"
+    products_path = "data/products"
+    target_path = "data/target_products"
 
     if not os.path.exists(products_path):
         print(f"Error: {products_path} does not exist.")

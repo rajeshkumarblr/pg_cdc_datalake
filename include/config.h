@@ -14,6 +14,7 @@ struct Config {
     uint16_t    pg_port         = 5432;
     std::string pg_database     = "postgres";
     std::string pg_user         = "";
+    std::string pg_password     = "";
 
     /* Replication slot and publication */
     std::string slot_name       = "cdc_lake_slot";

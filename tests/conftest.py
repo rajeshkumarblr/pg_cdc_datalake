@@ -5,17 +5,44 @@ import time
 import os
 import shutil
 
-DB_HOST = "localhost"
-DB_PORT = 9712
-DB_NAME = "ecommerce"
-DB_USER = "documentdb"
+def get_db_params():
+    params = {'host': 'localhost', 'port': 5432, 'dbname': 'ecommerce', 'user': 'cdc', 'password': 'cdc_password'}
+    try:
+        with open("cdc_data_lake.conf", "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip()
+                    if k == "pg_host":
+                        params['host'] = v
+                    elif k == "pg_port":
+                        params['port'] = int(v)
+                    elif k == "pg_database":
+                        params['dbname'] = v
+                    elif k == "pg_user":
+                        params['user'] = v
+                    elif k == "pg_password":
+                        params['password'] = v
+    except Exception:
+        pass
+    return params
+
+params = get_db_params()
+DB_HOST = params['host']
+DB_PORT = params['port']
+DB_NAME = params['dbname']
+DB_USER = params['user']
+DB_PASSWORD = params['password']
 CONFIG_FILE = "cdc_data_lake.conf"
 APP_BIN = "build/cdc_data_lake"
 DATA_DIR = "data"
 
 @pytest.fixture(scope="session")
 def db_connection():
-    conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER)
+    conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD)
     conn.autocommit = True
     yield conn
     conn.close()

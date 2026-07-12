@@ -1,0 +1,12 @@
+BasedOnStyle: Google
+IndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 100
+AllowShortFunctionsOnASingleLine: Inline
+TabWidth: 4
+UseTab: Never
+AlignAfterOpenBracket: Align
+AlignEscapedNewlines: Right
+AlignOperands: Align
+AlignTrailingComments: true
+Standard: Cpp17

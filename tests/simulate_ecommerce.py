@@ -3,12 +3,33 @@ import time
 import random
 import threading
 
-DB_PARAMS = {
-    'dbname': 'ecommerce',
-    'user': 'documentdb',
-    'host': 'localhost',
-    'port': 9712
-}
+def get_db_params():
+    params = {'dbname': 'ecommerce', 'host': 'localhost', 'port': 5432, 'user': 'cdc', 'password': 'cdc_password'}
+    try:
+        with open("cdc_data_lake.conf", "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip()
+                    if k == "pg_host":
+                        params['host'] = v
+                    elif k == "pg_port":
+                        params['port'] = int(v)
+                    elif k == "pg_database":
+                        params['dbname'] = v
+                    elif k == "pg_user":
+                        params['user'] = v
+                    elif k == "pg_password":
+                        params['password'] = v
+    except Exception:
+        pass
+    return params
+
+DB_PARAMS = get_db_params()
+
 
 def setup_schema():
     print("Setting up e-commerce schema...")

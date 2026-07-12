@@ -22,8 +22,8 @@ def main():
 
     spark.sparkContext.setLogLevel("WARN")
 
-    source_path = "/home/documentdb/pg_cdc_datalake/data/orders"
-    target_path = "/home/documentdb/pg_cdc_datalake/data/target_orders"
+    source_path = "data/orders"
+    target_path = "data/target_orders"
 
     if not os.path.exists(source_path):
         print(f"Source path {source_path} does not exist. Please run CDC pipeline first.")

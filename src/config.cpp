@@ -40,6 +40,9 @@ std::string Config::connection_string() const {
     if (!pg_user.empty()) {
         ss << " user=" << pg_user;
     }
+    if (!pg_password.empty()) {
+        ss << " password=" << pg_password;
+    }
     return ss.str();
 }
 
@@ -51,6 +54,9 @@ std::string Config::replication_connection_string() const {
        << " replication=database";
     if (!pg_user.empty()) {
         ss << " user=" << pg_user;
+    }
+    if (!pg_password.empty()) {
+        ss << " password=" << pg_password;
     }
     return ss.str();
 }
@@ -92,6 +98,8 @@ Config parse_config(const std::string& filepath) {
             config.pg_database = value;
         } else if (key == "pg_user") {
             config.pg_user = value;
+        } else if (key == "pg_password") {
+            config.pg_password = value;
         } else if (key == "slot_name") {
             config.slot_name = value;
         } else if (key == "publication_name") {

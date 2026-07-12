@@ -80,6 +80,28 @@ Before starting, ensure your PostgreSQL instance has `wal_level = logical` set. 
 ./build/cdc_data_lake --config cdc_data_lake.conf
 ```
 
+## Directory Structure
+
+To keep the codebase clean, modular, and professional, files are organized as follows:
+
+*   **[src/](file:///home/rajesh/proj/pg_cdc_datalake/src/)**: C++ implementation source code (`.cpp`).
+*   **[include/](file:///home/rajesh/proj/pg_cdc_datalake/include/)**: C++ header declarations (`.h`) and external dependencies.
+*   **[docs/](file:///home/rajesh/proj/pg_cdc_datalake/docs/)**: Architecture documentation, design sheets, and development logs.
+*   **[tests/](file:///home/rajesh/proj/pg_cdc_datalake/tests/)**: Automated pytest suite, test setups, test runner ([tests/run_test.sh](file:///home/rajesh/proj/pg_cdc_datalake/tests/run_test.sh)), and eCommerce simulation engines.
+*   **[examples/](file:///home/rajesh/proj/pg_cdc_datalake/examples/)**: Downstream analytics scripts using PySpark, Delta-RS, and Pandas.
+
+## Running Tests
+
+To run the automated regression suite:
+```bash
+pytest tests/
+```
+
+To execute the full end-to-end local build, ingestion, database seeding, and verification pipeline:
+```bash
+bash tests/run_test.sh
+```
+
 ## End-to-End Demonstration
 
 This repository comes with scripts to verify the complete pipeline using simulated data and Spark:
@@ -87,7 +109,7 @@ This repository comes with scripts to verify the complete pipeline using simulat
 1. **Start the Data Generator:**
    Simulate a live eCommerce application generating random traffic.
    ```bash
-   python3 simulate_ecommerce.py
+   python3 tests/simulate_ecommerce.py
    ```
 
 2. **Start the CDC Pipeline:**
@@ -99,5 +121,6 @@ This repository comes with scripts to verify the complete pipeline using simulat
 3. **Start Spark Analytics:**
    Stream the generated Delta Lake files using PySpark and observe live trending products.
    ```bash
-   python3 spark_analytics.py
+   python3 examples/spark_analytics.py
    ```
+

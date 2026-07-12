@@ -4,7 +4,7 @@ from deltalake import DeltaTable
 
 def main():
     print("Starting Native Delta Lake Analytics...")
-    data_path = "/home/documentdb/pg_cdc_datalake/data/order_items"
+    data_path = "data/order_items"
     
     while True:
         try:
